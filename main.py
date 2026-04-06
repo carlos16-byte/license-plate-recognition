@@ -1,2 +1,40 @@
-# Prueba Inicial 1.0
-print("Sistema de Reconocimiento de Placas de Vehículos - Versión 1.0")
+# Procesamiento de Imagenes para el Reconocimiento de Placas de Vehículos 1.0
+import cv2
+from src.image_processing import procesar_imagen
+from src.plate_detection import detectar_placa
+
+# Cargar imagen
+imagen = cv2.imread('license-plate-recognition\data\car2.jpg')
+
+if imagen is None:
+    print("Error al cargar la imagen.")
+    exit()
+
+# Procesar imagen
+gris, bordes = procesar_imagen(imagen)
+
+# Redimensionar imágenes para mejor visualización
+def redimensionar(img, ancho=600):
+    alto = int(img.shape[0] * (ancho / img.shape[1]))
+    return cv2.resize(img, (ancho, alto))
+
+imagen_small = redimensionar(imagen)
+gris_small = redimensionar(gris)
+bordes_small = redimensionar(bordes)
+
+# Detectar placa
+placa = detectar_placa(bordes, imagen)
+
+if placa is not None:
+    placa_small = redimensionar(placa, 300)
+    cv2.imshow('Placa Detectada', placa_small)
+else:
+    print("No se detecto ninguna placa")
+
+
+# Mostrar resultados
+cv2.imshow('Imagen Original', imagen_small)
+cv2.imshow('Imagen en Escala de Grises', gris_small)
+cv2.imshow('Imagen con Bordes', bordes_small)
+cv2.waitKey(0)
+cv2.destroyAllWindows()
