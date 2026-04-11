@@ -2,6 +2,7 @@
 import cv2
 from src.image_processing import procesar_imagen
 from src.plate_detection import detectar_placa
+from src.character_segmentation import segmentar_caracteres 
 
 # Cargar imagen
 imagen = cv2.imread('license-plate-recognition\data\car2.jpg')
@@ -31,6 +32,13 @@ if placa is not None:
 else:
     print("No se detecto ninguna placa")
 
+# Segmentar caracteres
+if placa is not None:
+    caracteres = segmentar_caracteres(placa)
+    
+    for i, char in enumerate(caracteres):
+        char_small = redimensionar(char, 100)
+        cv2.imshow(f"char {i}", char_small)
 
 # Mostrar resultados
 cv2.imshow('Imagen Original', imagen_small)
