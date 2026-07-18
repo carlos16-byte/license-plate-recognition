@@ -1,7 +1,25 @@
-opencv-python==4.9.0.80
-numpy==1.26.4
-matplotlib==3.8.2
-scikit-image==0.22.0
-scikit-learn==1.4.0
-pytesseract==0.3.10
+# Vision por computadora clasica
+opencv-contrib-python==4.11.0.86
 imutils==0.5.4
+scikit-image==0.26.0
+
+# Utilidades numericas / ML clasico
+numpy<2
+scikit-learn>=1.4
+joblib>=1.3
+
+# OCR
+easyocr>=1.7
+pytesseract>=0.3.10   # requiere instalar el binario de Tesseract-OCR por separado (opcional)
+
+# Deep Learning / YOLO (Fase 3)
+torch==2.2.1
+torchvision==0.17.1
+ultralytics>=8.4
+
+# Generacion de datos sinteticos y visualizacion
+Pillow>=10.0
+matplotlib>=3.8
+
+# Tests
+pytest>=8.0

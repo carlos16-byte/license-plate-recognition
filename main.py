@@ -1,0 +1,6 @@
+#!/usr/bin/env python
+"""Punto de entrada del sistema. Ver: python main.py --help"""
+from lpr.cli import main
+
+if __name__ == "__main__":
+    main()

@@ -2,3 +2,15 @@ __pycache__/
 *.pyc
 .env
 .vscode/
+
+# artefactos generados (modelos entrenados, datasets sinteticos, resultados)
+*.egg-info/
+.pytest_cache/
+models/*.pt
+models/*.joblib
+models/face_model/
+models/yolo_runs/
+data/plates/synthetic/
+data/faces/*/
+results/*
+yolov8n.pt
