@@ -95,6 +95,32 @@ def cmd_plate_video(args: argparse.Namespace) -> None:
     cv2.destroyAllWindows()
 
 
+def _draw_enroll_hud(frame, name: str, count: int, total: int, face_visible: bool):
+    """Panel superior con nombre/progreso e instrucciones, en vez de texto
+    crudo pegado sobre el video (dificil de leer con cualquier fondo)."""
+    h, w = frame.shape[:2]
+    bar_h = 78
+    overlay = frame.copy()
+    cv2.rectangle(overlay, (0, 0), (w, bar_h), (30, 30, 30), -1)
+    frame = cv2.addWeighted(overlay, 0.65, frame, 0.35, 0)
+
+    cv2.putText(frame, name, (16, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (255, 255, 255), 2)
+
+    progress_text = f"{count}/{total} fotos"
+    (pt_w, _), _ = cv2.getTextSize(progress_text, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
+    cv2.putText(frame, progress_text, (w - pt_w - 16, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 120), 2)
+
+    bar_x, bar_y, bar_w, bar_h_px = 16, 42, w - 32, 8
+    cv2.rectangle(frame, (bar_x, bar_y), (bar_x + bar_w, bar_y + bar_h_px), (80, 80, 80), -1)
+    filled_w = int(bar_w * min(count / max(total, 1), 1.0))
+    cv2.rectangle(frame, (bar_x, bar_y), (bar_x + filled_w, bar_y + bar_h_px), (0, 255, 120), -1)
+
+    hint_color = (0, 255, 0) if face_visible else (120, 120, 255)
+    hint = "ESPACIO: capturar   |   Q: salir" if face_visible else "Buscando rostro...   |   Q: salir"
+    cv2.putText(frame, hint, (16, 68), cv2.FONT_HERSHEY_SIMPLEX, 0.5, hint_color, 1)
+    return frame
+
+
 def cmd_face_enroll(args: argparse.Namespace) -> None:
     from lpr.faces.detector import FaceDetector
     from lpr.faces.gallery import FaceGallery
@@ -111,8 +137,7 @@ def cmd_face_enroll(args: argparse.Namespace) -> None:
             for box in boxes:
                 x, y, w, h = box.box
                 cv2.rectangle(display, (x, y), (x + w, y + h), (0, 255, 0), 2)
-            cv2.putText(display, f"{args.name}: {count}/{args.num_samples} (ESPACIO=capturar, Q=salir)",
-                        (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+            display = _draw_enroll_hud(display, args.name, count, args.num_samples, face_visible=bool(boxes))
             cv2.imshow("Enrolamiento facial", display)
             key = cv2.waitKey(1) & 0xFF
             if key == ord(" ") and boxes:
