@@ -11,6 +11,7 @@ models/*.joblib
 models/face_model/
 models/yolo_runs/
 data/plates/synthetic/
+data/plates/real/
 data/faces/*/
 results/*
 yolov8n.pt
