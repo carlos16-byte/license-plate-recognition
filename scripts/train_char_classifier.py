@@ -1,12 +1,25 @@
-"""Fase 2 - Entrena un clasificador de caracteres (SVM y RandomForest) usando
-un dataset SINTETICO de glifos A-Z/0-9, ya que no existe un dataset real de
-caracteres de placa etiquetado. Es la tecnica estandar para bootstrapear un
-clasificador de OCR de placas cuando no hay datos anotados: se renderizan los
-mismos caracteres que aparecen en una placa con varias fuentes, rotaciones y
-ruido, y se entrena sobre eso.
+"""Fase 2 - Entrena un clasificador de caracteres (SVM y RandomForest) para
+leer placas ya segmentadas.
+
+v2: en vez de entrenar con letras aisladas y perfectas (una fuente de Windows,
+centradas, sin ruido de fondo), generamos PLACAS SINTETICAS COMPLETAS con
+scripts.generate_synthetic_plates._render_plate, les aplicamos degradaciones
+tipicas de una foto real (blur, ruido, compresion JPEG, iluminacion pareja),
+y corremos el MISMO segmentador (lpr.plates.segmentation.segmentar_caracteres)
+que se usa en produccion para extraer los caracteres.
+
+Por que el cambio: la v1 media 69% de accuracy en el benchmark sintetico pero
+solo 31% contra fotos reales -- el clasificador nunca habia visto la fuente
+real de una placa, ni los artefactos que deja la segmentacion (recortes
+irregulares, bordes de threshold, etc). Entrenar con el mismo pipeline de
+segmentacion que despues se usa en inferencia cierra ese hueco.
+
+Si segmentar_caracteres no separa exactamente tantos caracteres como el
+texto conocido, esa muestra se descarta (no hay forma de saber que blob
+corresponde a que letra), en vez de arriesgar una etiqueta incorrecta.
 
 Uso:
-    python scripts/train_char_classifier.py [--samples-per-char 300]
+    python scripts/train_char_classifier.py [--num-plates 4000]
 
 Guarda el mejor modelo (por accuracy en un split de validacion) en
 models/char_classifier.joblib junto con el mapeo de clases.
@@ -15,13 +28,13 @@ from __future__ import annotations
 
 import argparse
 import random
+import string
 import sys
 from pathlib import Path
 
 import cv2
 import joblib
 import numpy as np
-from PIL import Image, ImageDraw, ImageFont
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import accuracy_score
 from sklearn.model_selection import train_test_split
@@ -32,67 +45,80 @@ sys.path.insert(0, str(ROOT_DIR))
 
 from lpr.config import CHAR_CLASSIFIER_PATH  # noqa: E402
 from lpr.logging_utils import get_logger  # noqa: E402
+from lpr.plates.segmentation import segmentar_caracteres  # noqa: E402
+from scripts.generate_synthetic_plates import _render_plate  # noqa: E402
 
 logger = get_logger(__name__)
 
 CHARSET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 GLYPH_SIZE = 28  # tamano final de cada caracter, en pixeles (cuadrado)
 
-FONT_CANDIDATES = [
-    "arial.ttf",
-    "arialbd.ttf",
-    "cour.ttf",
-    "courbd.ttf",
-    "consola.ttf",
-    "consolab.ttf",
-    "tahoma.ttf",
-]
-FONTS_DIR = Path("C:/Windows/Fonts")
+
+def _random_plate_text(rng: random.Random) -> str:
+    letters = "".join(rng.choices(string.ascii_uppercase, k=rng.choice([2, 3])))
+    digits = "".join(rng.choices(string.digits, k=rng.choice([3, 4])))
+    return (letters + digits) if rng.random() < 0.5 else (digits + letters)
 
 
-def _load_fonts(font_size: int = 34) -> list[ImageFont.FreeTypeFont]:
-    fonts = []
-    for name in FONT_CANDIDATES:
-        path = FONTS_DIR / name
-        if path.exists():
-            fonts.append(ImageFont.truetype(str(path), font_size))
-    if not fonts:
-        logger.warning("No se encontraron fuentes TTF de Windows, se usa la fuente por defecto de PIL")
-        fonts = [ImageFont.load_default()]
-    return fonts
+def _degrade(plate_bgr: np.ndarray, rng: random.Random) -> np.ndarray:
+    """Simula lo que le pasa a una placa real entre la camara y el recorte:
+    desenfoque de movimiento/foco, ruido, compresion JPEG y iluminacion
+    pareja/dispareja. Sin esto el clasificador solo aprende glifos perfectos."""
+    img = plate_bgr.copy()
 
-
-def _render_glyph(char: str, font: ImageFont.FreeTypeFont, rng: random.Random) -> np.ndarray:
-    canvas_size = 48
-    img = Image.new("L", (canvas_size, canvas_size), color=0)
-    draw = ImageDraw.Draw(img)
-
-    bbox = draw.textbbox((0, 0), char, font=font)
-    text_w, text_h = bbox[2] - bbox[0], bbox[3] - bbox[1]
-    x = (canvas_size - text_w) / 2 - bbox[0] + rng.uniform(-2, 2)
-    y = (canvas_size - text_h) / 2 - bbox[1] + rng.uniform(-2, 2)
-    draw.text((x, y), char, fill=255, font=font)
-
-    array = np.array(img, dtype=np.uint8)
-
-    angle = rng.uniform(-8, 8)
-    matrix = cv2.getRotationMatrix2D((canvas_size / 2, canvas_size / 2), angle, 1.0)
-    array = cv2.warpAffine(array, matrix, (canvas_size, canvas_size), flags=cv2.INTER_LINEAR)
+    if rng.random() < 0.6:
+        k = rng.choice([3, 3, 5])
+        img = cv2.GaussianBlur(img, (k, k), 0)
 
     if rng.random() < 0.5:
-        noise = rng.uniform(2, 10)
-        array = array.astype(np.float32) + np.random.normal(0, noise, array.shape)
-        array = np.clip(array, 0, 255).astype(np.uint8)
+        factor = rng.uniform(0.6, 1.5)
+        img = np.clip(img.astype(np.float32) * factor, 0, 255).astype(np.uint8)
 
-    ys, xs = np.where(array > 40)
-    if len(xs) and len(ys):
-        pad = 2
-        x0, x1 = max(xs.min() - pad, 0), min(xs.max() + pad, canvas_size)
-        y0, y1 = max(ys.min() - pad, 0), min(ys.max() + pad, canvas_size)
-        array = array[y0:y1, x0:x1]
+    if rng.random() < 0.5:
+        noise = np.random.normal(0, rng.uniform(3, 15), img.shape)
+        img = np.clip(img.astype(np.float32) + noise, 0, 255).astype(np.uint8)
 
-    array = cv2.resize(array, (GLYPH_SIZE, GLYPH_SIZE), interpolation=cv2.INTER_AREA)
-    return array
+    if rng.random() < 0.6:
+        quality = rng.randint(25, 70)
+        ok, encoded = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, quality])
+        if ok:
+            img = cv2.imdecode(encoded, cv2.IMREAD_COLOR)
+
+    if rng.random() < 0.3:
+        # sombra/gradiente de luz pareja como en fotos al aire libre
+        h, w = img.shape[:2]
+        gradient = np.tile(np.linspace(rng.uniform(0.6, 1.0), rng.uniform(0.6, 1.0), w), (h, 1))
+        img = np.clip(img.astype(np.float32) * gradient[:, :, None], 0, 255).astype(np.uint8)
+
+    return img
+
+
+def build_dataset(num_plates: int, seed: int = 42) -> tuple[np.ndarray, np.ndarray]:
+    rng = random.Random(seed)
+
+    X, y = [], []
+    matched, discarded = 0, 0
+
+    for _ in range(num_plates):
+        text = _random_plate_text(rng)
+        plate_pil = _render_plate(text, rng)
+        plate_bgr = cv2.cvtColor(np.array(plate_pil), cv2.COLOR_RGB2BGR)
+        plate_bgr = _degrade(plate_bgr, rng)
+
+        chars = segmentar_caracteres(plate_bgr)
+        if len(chars) != len(text):
+            discarded += 1
+            continue
+
+        matched += 1
+        for glyph, label in zip(chars, text):
+            glyph = cv2.resize(glyph, (GLYPH_SIZE, GLYPH_SIZE), interpolation=cv2.INTER_AREA)
+            X.append(_extract_features(glyph))
+            y.append(label)
+
+    logger.info("Placas generadas: %d | segmentadas correctamente: %d | descartadas: %d",
+                num_plates, matched, discarded)
+    return np.array(X, dtype=np.float32), np.array(y)
 
 
 def _extract_features(glyph: np.ndarray) -> np.ndarray:
@@ -110,30 +136,16 @@ def _extract_features(glyph: np.ndarray) -> np.ndarray:
     return np.concatenate([hog_features, pixel_features])
 
 
-def build_dataset(samples_per_char: int, seed: int = 42) -> tuple[np.ndarray, np.ndarray]:
-    rng = random.Random(seed)
-    fonts = _load_fonts()
-
-    X, y = [], []
-    for char in CHARSET:
-        for _ in range(samples_per_char):
-            font = rng.choice(fonts)
-            glyph = _render_glyph(char, font, rng)
-            X.append(_extract_features(glyph))
-            y.append(char)
-
-    return np.array(X, dtype=np.float32), np.array(y)
-
-
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--samples-per-char", type=int, default=300)
+    parser.add_argument("--num-plates", type=int, default=4000,
+                         help="Cuantas placas sinteticas generar (cada una aporta varios caracteres)")
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
-    logger.info("Generando dataset sintetico de caracteres (%d muestras/caracter)...", args.samples_per_char)
-    X, y = build_dataset(args.samples_per_char, args.seed)
-    logger.info("Dataset: %d muestras, %d clases", len(X), len(set(y)))
+    logger.info("Generando dataset a partir de %d placas sinteticas degradadas...", args.num_plates)
+    X, y = build_dataset(args.num_plates, args.seed)
+    logger.info("Dataset: %d caracteres, %d clases", len(X), len(set(y)))
 
     X_train, X_val, y_train, y_val = train_test_split(
         X, y, test_size=0.2, random_state=args.seed, stratify=y
@@ -141,7 +153,7 @@ def main():
 
     candidates = {
         "svm": SVC(kernel="rbf", C=10, gamma="scale", probability=True),
-        "random_forest": RandomForestClassifier(n_estimators=200, random_state=args.seed),
+        "random_forest": RandomForestClassifier(n_estimators=300, random_state=args.seed),
     }
 
     best_name, best_model, best_acc = None, None, -1.0
